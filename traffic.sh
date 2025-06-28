@@ -1,21 +1,11 @@
 #!/bin/bash
 
 LOG_BASE="/var/www/vhosts"
-HIT_THRESHOLD=5
+HIT_THRESHOLD=100
 DAYS_AGO="${1:-0}"
 DOMAIN_FILTER="$2"
 SORT_OPTION="$3"
 
-echo "Traffic Analysis Script v.1.0 by HarjeetSingh@yahoo.com"
-echo "-------------------------------------------------------"
-echo "Usage: $0 [days] [domain_filter] [sort_option]"
-echo "days: number of days to look back (i.e. 15)"
-echo "domain_filter: specific domain to filter logs (optional)"
-echo "sort_option: sorting preference (default: by date, options: --sort=ip, --sort=hits)"
-
-echo "Processing logs from $LOG_BASE for the last $DAYS_AGO days..."
-
-# Calculate cutoff as epoch
 if [[ "$DAYS_AGO" -gt 0 ]]; then
     CUTOFF_DATE=$(date -d "$DAYS_AGO days ago" +"%s")
 else
@@ -49,8 +39,45 @@ for domain_path in "$LOG_BASE"/*; do
                 return ""
             }
 
+        	function extract_bot_name(ua, botname, boturl, match_arr) {
+        	    ua_lc = tolower(ua)
+        
+        	    if (ua_lc ~ /bot/) {
+        	        # Try to extract the bot name
+        	        if (match(ua, /([A-Za-z0-9._\-]+bot)/, match_arr)) {
+        	            botname = match_arr[1]
+        	        } else {
+        	            botname = "UnknownBot"
+        	        }
+        
+        	        # Try to extract the first URL
+        	        if (match(ua, /\+?https?:\/\/[^ )"]+/, match_arr)) {
+        	            boturl = match_arr[0]
+        	        } else {
+        	            boturl = ""
+        	        }
+        	
+        	        return botname (boturl ? " (" boturl ")" : "")
+        	    }
+        
+        	    # Not a bot, but has a URL
+        	    if (match(ua, /\+?https?:\/\/[^ )"]+/, match_arr)) {
+        	        return match_arr[0]
+        	    }
+        	
+        	    # Else return the whole user-agent string
+        	    return ua
+        	}
+
+
             {
                 ip = $1
+                ua = ""
+                n = split($0, parts, "\"")
+                if (length(parts) >= 6) {
+                    ua = parts[6]
+                }
+
                 result = parse_date($0)
                 if (result == "") next
 
@@ -61,33 +88,40 @@ for domain_path in "$LOG_BASE"/*; do
 
                 if (epoch >= cutoff) {
                     key = domain "\t" display_date "\t" ip
+
                     counts[key]++
                     sortkeys[key] = sortkey
+
+                    if (!(key in bots)) {
+                        bots[key] = extract_bot_name(ua)
+                    }
                 }
             }
 
             END {
                 for (k in counts)
-                    if (counts[k] > '"$HIT_THRESHOLD"')
-                        print sortkeys[k] "\t" k "\t" counts[k]
+                    if (counts[k] > '"$HIT_THRESHOLD"') {
+                        botstring = (k in bots) ? bots[k] : "-"
+                        print sortkeys[k] "\t" k "\t" counts[k] "\t" botstring
+                    }
             }
         ' "$log_file" >> "$TMP_OUTPUT"
     done
 done
 
 # Header
-echo -e "Domain\t\tDate\t\tIP\t\tHits"
-echo "-----------------------------------------------------------"
+echo -e "Domain\t\tDate\t\tIP\t\tHits\tBot/User-Agent"
+echo "---------------------------------------------------------------------------------------"
 
-# Sort and strip hidden sort key
+# Sort and output
 case "$SORT_OPTION" in
     --sort=ip)
         sort -k4,4 "$TMP_OUTPUT" | cut -f2-
         ;;
     --sort=hits)
-        sort -k5,5nr "$TMP_OUTPUT" | cut -f2-
+        sort -k4,4nr "$TMP_OUTPUT" | cut -f2-
         ;;
-    *)  # default: sort by sortable date (field 1)
+    *)  # default: sort by date
         sort -k1,1 "$TMP_OUTPUT" | cut -f2-
         ;;
 esac
